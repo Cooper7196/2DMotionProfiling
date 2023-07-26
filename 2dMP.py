@@ -270,6 +270,7 @@ for segment in segments:
 path = Spline(beziers)
 # Motion Profiling
 angular_accel_arr = []
+back_vel = []
 def generate(constraints : Constraints, path, dt=0.001):
     trajectory = []
     length = path.get_length()
@@ -286,9 +287,10 @@ def generate(constraints : Constraints, path, dt=0.001):
     tmp_dist = 0
     i = 0
     while dist <= length:
+        # print(dist, length)
         t = path.get_t_at_arc_length(dist)
-        if i % 100 == 0:
-            print(i, t, dist, tmp_dist, length)
+        # if i % 100 == 0:
+        #     print(i, t, dist, tmp_dist, length)
         curvature = path.get_curvature(t)
 
         angular_vel = vel * curvature
@@ -306,26 +308,9 @@ def generate(constraints : Constraints, path, dt=0.001):
             tmp_angular_accel = 0
             tmp_last_angular_vel = angular_vel
             max_decel_arr = []
-            while tmp_dist <= length and tmp_vel > 0 :
-                tmp_t = path.get_t_at_arc_length(tmp_dist)
-                tmp_curvature = path.get_curvature(tmp_t)
-
-                tmp_angular_vel = tmp_vel * tmp_curvature
-                tmp_angular_accel = (tmp_angular_vel - tmp_last_angular_vel) / dt
-                tmp_last_angular_vel = tmp_angular_vel
-
-                tmp_max_decel = constraints.max_decel - abs(tmp_angular_accel * constraints.track_width / 2)
-
-                tmp_vel = min((constraints.max_speed(tmp_curvature), tmp_vel - tmp_max_decel * dt))
-
-                tmp_dist += tmp_vel * dt
-                decel_dist += tmp_vel * dt
-                
-                max_decel_arr.append(tmp_max_decel)
-            if tmp_dist < length:
-                tmp_dist = 0
+            
         
-        vel = min((constraints.max_speed(curvature), vel + max_accel * dt, (vel - max_decel * dt if tmp_dist >= length else float('inf'))))
+        vel = max(0, min((constraints.max_speed(curvature), vel + max_accel * dt, (vel - max_decel * dt if dist >= 170.43153965610767 else float('inf')))))
         # if tmp_dist >= dist and len(max_decel_arr) > 1:
         #     plt.clf()
         #     plt.plot(max_decel_arr, '.')
@@ -337,6 +322,36 @@ def generate(constraints : Constraints, path, dt=0.001):
 
         trajectory.append((vel, angular_vel, curvature))
         i += 1
+    cur_point = len(trajectory) - 1
+    vel = 0
+    dist = length
+    last_angular_vel = 0
+    while vel != trajectory[cur_point][0]:
+        t = path.get_t_at_arc_length(dist)
+        curvature = path.get_curvature(t)
+
+        angular_vel = vel * curvature
+        angular_accel = (angular_vel - last_angular_vel) / dt
+        last_angular_vel = angular_vel
+
+        max_decel = constraints.max_decel - abs(angular_accel * constraints.track_width / 2)
+
+        
+        vel = max(0, min((constraints.max_speed(curvature), vel + max_decel * dt,)))
+        # if tmp_dist >= dist and len(max_decel_arr) > 1:
+        #     plt.clf()
+        #     plt.plot(max_decel_arr, '.')
+        #     plt.show()
+        # print(angular_accel)
+        delta_d = vel * dt
+        dist -= delta_d
+        if math.isclose(vel, trajectory[cur_point][0], rel_tol=0.01):
+            break
+        # trajectory[cur_point] = (vel, angular_vel, curvature)
+        i += 1
+        cur_point -= 1
+        back_vel.append(vel)
+    print(dist)
     trajectory.append((0, 0, 0))
     
     
@@ -389,21 +404,24 @@ d = 0
 # print("test", bezier.get_curvature(0.75))
 angular_accel_arr.remove(max(angular_accel_arr))
 angular_accel_arr.remove(min(angular_accel_arr))
-# angular_accel_arr.remove(min(angular_accel_arr))
+angular_accel_arr.remove(min(angular_accel_arr))
 
 accel.remove(min(accel))
 accel.remove(min(accel))
 accel.remove(min(accel))
-accel.remove(min(accel))
-accel.remove(min(accel))
-accel.remove(max(accel))
+# accel.remove(min(accel))
+# accel.remove(min(accel))
+# accel.remove(max(accel))
 
 angular_accel_arr = [angular_accel_arr[i] for i in range(len(angular_accel_arr)) if i % (0.01 / 0.001) == 0]
-
+back_vel = [back_vel[i] for i in range(len(back_vel)) if i % (0.01 / 0.001) == 0]
+print(trajectory[-1])
 plt.clf()
 plt.plot([i[0] for i in trajectory],  '.')
-# plt.plot(angular_accel_arr, 'x')
+plt.plot(angular_accel_arr, 'x')
 plt.plot(accel, 'o')
+plt.plot(list(range(len(trajectory), len(trajectory) - len(back_vel), -1)) ,list((back_vel)), 'o')
+plt.plot(list((range(len(back_vel)))) ,list((back_vel)), 'o')
 plt.show()
 
 # plt.plot(angular_accel_arr, '.')
