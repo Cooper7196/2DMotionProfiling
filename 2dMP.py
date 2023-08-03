@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import math
 import json
 import numpy as np
+import cProfile
+from functools import lru_cache 
 
 class Point:
     def __init__(self, x, y):
@@ -12,7 +14,7 @@ class Point:
         return ((self.x - other.x)**2 + (self.y - other.y)**2)**0.5
 
 class CubicBezier:
-    def __init__(self, p0, p1, p2, p3, length=100):
+    def __init__(self, p0, p1, p2, p3, length=10000):
         self.p0 = p0
         self.p1 = p1
         self.p2 = p2
@@ -29,6 +31,7 @@ class CubicBezier:
 
         ox, oy = self.f(0)
         clen = 0
+        t = 0
         for i in range(self.len + 1):
             x, y = self.f(i / float(self.len))
             dx = ox - x
@@ -37,6 +40,8 @@ class CubicBezier:
             self.lengths[i] = clen
             ox = x
             oy = y
+            t += 1
+        print(t)
         self.length = clen
         
     def get_arc_length_at_t(self, t):
@@ -131,7 +136,7 @@ class QuinticBezier:
                 [p1.x, p1.y],
                 [p2.x, p2.y],
                 [p3.x, p3.y],
-                [p4.x, p4.y]
+                [p4.x, p4.y],
                 [p5.x, p5.y]
             ])
         self.len = length
@@ -178,6 +183,11 @@ class QuinticBezier:
                 [20, -40, 20, 0, 0, 0]])
         T = np.array([t**3, t**2, t, 1])
         return np.matmul(np.matmul(T, M), self.P)
+    def get_curvature(self, t):
+        df = self.df(t)
+        ddf = self.ddf(t)
+        return (df[0] * ddf[1] - df[1] * ddf[0]) / (df[0]**2 + df[1]**2)**(3/2)
+
 class Spline:
     def __init__(self, curves):
         self.curves = curves
@@ -266,162 +276,152 @@ for segment in segments:
     for control in segment['controls']:
         print(control['x'], control['y'])
         points.append(Point(control['x'], control['y']))
-    beziers.append(CubicBezier(points[0], points[1], points[2], points[3], 100))
+    beziers.append(CubicBezier(points[0], points[1], points[2], points[3]))
 path = Spline(beziers)
+
 # Motion Profiling
-angular_accel_arr = []
-back_vel = []
-def generate(constraints : Constraints, path, dt=0.001):
+# @profile
+def generate(constraints : Constraints, path, dt=0.001, dd=0.01):
     trajectory = []
     length = path.get_length()
-    profile = TrapezoidalProfile(constraints, length)
-
     t = 0
-    dist = 0.01
+    dist = dd
 
-    vel = 0.00
+    startTime = time.time()
+
+    vel = 0.00001
     last_angular_vel = 0.00
     angular_vel = 0.00
     angular_accel = 0.00
-    decel_dist = 0
-    tmp_dist = 0
-    i = 0
+    forward_pass_data = [(0, 0)]
+
     while dist <= length:
         # print(dist, length)
         t = path.get_t_at_arc_length(dist)
-        # if i % 100 == 0:
-        #     print(i, t, dist, tmp_dist, length)
         curvature = path.get_curvature(t)
 
         angular_vel = vel * curvature
-        angular_accel = (angular_vel - last_angular_vel) / dt
+        angular_accel = (angular_vel - last_angular_vel) / (dd / vel)
         last_angular_vel = angular_vel
 
-        max_accel = constraints.max_accel - abs(angular_accel * constraints.track_width / 2)
-        max_decel = constraints.max_decel - abs(angular_accel * constraints.track_width / 2)
-
-        # calc dist to decelerate
-        if tmp_dist < length:
-            tmp_dist = dist
-            tmp_vel = vel
-            decel_dist = 0
-            tmp_angular_accel = 0
-            tmp_last_angular_vel = angular_vel
-            max_decel_arr = []
-            
         
-        vel = max(0, min((constraints.max_speed(curvature), vel + max_accel * dt, (vel - max_decel * dt if dist >= 170.43153965610767 else float('inf')))))
-        # if tmp_dist >= dist and len(max_decel_arr) > 1:
-        #     plt.clf()
-        #     plt.plot(max_decel_arr, '.')
-        #     plt.show()
-        # print(angular_accel)
-        angular_accel_arr.append(angular_accel * constraints.track_width / 2)
-        delta_d = vel * dt
-        dist += delta_d
+        max_accel = constraints.max_accel - abs(angular_accel * constraints.track_width / 2)
+        vel = min((constraints.max_speed(curvature), math.sqrt(vel*vel + 2 * max_accel * dd), ))
+        dist += dd
+        forward_pass_data.append((dist, vel))
+    
+    print("Forward Pass Time:", time.time() - startTime)
 
-        trajectory.append((vel, angular_vel, curvature))
-        i += 1
-    cur_point = len(trajectory) - 1
-    vel = 0
-    dist = length
+    vel = 0.00001
+    backward_pass_data = [(0, 0)]
+    angular_accel = 0
     last_angular_vel = 0
-    while vel != trajectory[cur_point][0]:
+    i = 0
+    startTime = time.time()
+    dist = length
+    while dist >= 0:
         t = path.get_t_at_arc_length(dist)
         curvature = path.get_curvature(t)
 
         angular_vel = vel * curvature
-        angular_accel = (angular_vel - last_angular_vel) / dt
+        angular_accel = (angular_vel - last_angular_vel) / (dd / vel)
         last_angular_vel = angular_vel
 
         max_decel = constraints.max_decel - abs(angular_accel * constraints.track_width / 2)
 
-        
-        vel = max(0, min((constraints.max_speed(curvature), vel + max_decel * dt,)))
-        # if tmp_dist >= dist and len(max_decel_arr) > 1:
-        #     plt.clf()
-        #     plt.plot(max_decel_arr, '.')
-        #     plt.show()
-        # print(angular_accel)
-        delta_d = vel * dt
-        dist -= delta_d
-        if math.isclose(vel, trajectory[cur_point][0], rel_tol=0.01):
-            break
-        # trajectory[cur_point] = (vel, angular_vel, curvature)
-        i += 1
-        cur_point -= 1
-        back_vel.append(vel)
-    print(dist)
-    trajectory.append((0, 0, 0))
-    
-    
-    # forward pass
-    # for i in range(len(trajectory) - 1):
-    #     angular_accel = (trajectory[i + 1][1] - trajectory[i][1]) / dt
-    #     max_accel = constraints.max_accel - abs(angular_accel * constraints.track_width / 2)
-    #     max_decel = constraints.max_decel - abs(angular_accel * constraints.track_width / 2)
-    #     # max_accel = constraints.max_accel
-    #     if (trajectory[i + 1][0] - trajectory[i][0]) / dt > max_accel:
-    #         print("test")
-    #         trajectory[i + 1] = (min(constraints.max_speed(trajectory[i][2]), (trajectory[i][0] + max_accel * dt)), trajectory[i + 1][1], trajectory[i + 1][2])
-    #     if (trajectory[i + 1][0] - trajectory[i][0]) / dt < -max_decel:
-    #         print("test1", i, (trajectory[i + 1][0] - trajectory[i][0]))
-    #         trajectory[i + 1] = (min((trajectory[i][0] - max_decel * dt, )), trajectory[i + 1][1], trajectory[i + 1][2])
-    #     curLeft, curRight = constraints.wheel_speeds(trajectory[i][0], trajectory[i][1])
-    #     nextLeft, nextRight = constraints.wheel_speeds(trajectory[i + 1][0], trajectory[i + 1][1])
-    # trajectory.append((0, 0, 0))
-    # # backward pass
-    # for i in range(len(trajectory) - 1, 0, -1):
-    #     angular_accel = (trajectory[i - 1][1] - trajectory[i][1]) / dt
-    #     max_accel = constraints.max_accel - abs(angular_accel * constraints.track_width / 2)
-    #     max_decel = constraints.max_decel - abs(angular_accel * constraints.track_width / 2)
-    #     if i % 10 == 0:
-    #         print(i, max_accel, max_decel)
-    #     # max_accel = constraints.max_accel
-    #     if (trajectory[i - 1][0] - trajectory[i][0]) / dt > max_accel:
-    #         print("test2", i, (trajectory[i - 1][0] - trajectory[i][0]) / dt)
-    #         trajectory[i - 1] = (min(constraints.max_speed(trajectory[i][2]), (trajectory[i][0] + max_accel * dt)), trajectory[i - 1][1], trajectory[i - 1][2])
-    #     if (trajectory[i - 1][0] - trajectory[i][0]) / dt < -max_decel:
-    #         print("test3", i, (trajectory[i - 1][0] - trajectory[i][0]) / dt)
-    #         trajectory[i - 1] = (min((trajectory[i][0] - max_decel * dt, )), trajectory[i - 1][1], trajectory[i - 1][2])
+        vel = min((constraints.max_speed(curvature), math.sqrt(vel**2.0 + 2 * max_decel * dd), ))
 
-    return [trajectory[i] for i in range(len(trajectory)) if i % (0.01 / dt) == 0]
+        dist -= dd
+        backward_pass_data.append((dist, vel))
+        i += 1
+
+    print("Backward Pass Time:", time.time() - startTime)
+    distanceTrajectory = [min((forward_pass_data[i][1], backward_pass_data[len(forward_pass_data) - i][1])) for i in range(len(forward_pass_data))]
+
+    dist = 0.01
+    vel = 0
+    trajectory.append((vel, 0, 0))
+    startTime = time.time()
+    while dist <= length:
+        t = path.get_t_at_arc_length(dist)
+        curvature = path.get_curvature(t)
+
+        index = int(dist / dd)
+        interpFact = (dist / dd) - index
+
+        try:
+            vel = distanceTrajectory[index] + interpFact * (distanceTrajectory[index + 1] - distanceTrajectory[index])
+        except IndexError:
+            print(dist, dd, index, len(distanceTrajectory))
+            trajectory.append((vel, 0, 0))
+            break
+
+        angular_vel = vel * curvature
+        dist += vel * dt
+        trajectory.append((vel, angular_vel, curvature))
+    print("Trajectory Generation Time:", time.time() - startTime)
+
+    # return (forward_pass_data, backward_pass_data, [trajectory[i] for i in range(len(trajectory)) if i % (0.01 / dt) == 0])
+    # return (forward_pass_data, backward_pass_data, trajectory)
+    return (distanceTrajectory, [trajectory[i] for i in range(len(trajectory)) if i % (0.01 / dt) == 0])
+
+
+
 
 
 startTime = time.time()
 constraints = Constraints(15, 62.8318, 100)
 
+distanceTrajectory, trajectory = generate(constraints, path, 0.01, 0.05)
+with open("distanceTrajectory.txt", "w") as f:
+    for distance in distanceTrajectory:
+        f.write(f"{distance}\n")
 
-
-
-trajectory = generate(constraints, path)
-print(time.time() - startTime)
+print("Runtime:", time.time() - startTime)
 accel = []
 for i in range(len(trajectory) - 1):
     accel.append((trajectory[i + 1][0] - trajectory[i][0]) / 0.01)
+accel.remove(min(accel))
+
+accel_two = []
+for i in range(len(distanceTrajectory) - 1):
+    accel_two.append((distanceTrajectory[i + 1]**2 - distanceTrajectory[i] ** 2) / 2 * 0.01)
+
+accel_two.remove(min(accel_two))
+accel_two.remove(min(accel_two))
+accel_two.remove(min(accel_two))
+accel_two.remove(max(accel_two))
+accel_two.remove(max(accel_two))
+accel_two.remove(max(accel_two))
+accel_two.remove(max(accel_two))
+
+# fig, axs = plt.subplots(2)
+# fig.suptitle('Vertically stacked subplots')
+# axs[0].plot(accel, '.')
+# axs[1].plot(accel_two, '.')
+# plt.show()
+
+# plt.plot(accel_two, '.')
+# plt.show()
 vel = []
 d = 0
-# print("test", bezier.get_curvature(0.75))
-angular_accel_arr.remove(max(angular_accel_arr))
-angular_accel_arr.remove(min(angular_accel_arr))
-angular_accel_arr.remove(min(angular_accel_arr))
 
-accel.remove(min(accel))
-accel.remove(min(accel))
-accel.remove(min(accel))
-# accel.remove(min(accel))
-# accel.remove(min(accel))
-# accel.remove(max(accel))
+print(f"Final Speed: {trajectory[-1][0]} Final Angular Velocity: {trajectory[-1][1]} Final Curvature: {trajectory[-1][2]}")
 
-angular_accel_arr = [angular_accel_arr[i] for i in range(len(angular_accel_arr)) if i % (0.01 / 0.001) == 0]
-back_vel = [back_vel[i] for i in range(len(back_vel)) if i % (0.01 / 0.001) == 0]
-print(trajectory[-1])
+accel.remove(max(accel))
+
+# plt.clf()
+# plt.plot(max_accel_arr, '.')
+# plt.plot(list(reversed(max_decel_arr)), '.')
+# plt.show()
+
+# plt.plot(distanceTrajectory, '.')
+
+
 plt.clf()
 plt.plot([i[0] for i in trajectory],  '.')
-plt.plot(angular_accel_arr, 'x')
-plt.plot(accel, 'o')
-plt.plot(list(range(len(trajectory), len(trajectory) - len(back_vel), -1)) ,list((back_vel)), 'o')
-plt.plot(list((range(len(back_vel)))) ,list((back_vel)), 'o')
+# plt.plot(angular_accel_arr, 'x')
+plt.plot([i for i in accel], 'o')
 plt.show()
 
 # plt.plot(angular_accel_arr, '.')
@@ -430,6 +430,7 @@ plt.show()
 accel = []
 # for i in range(1, len(trajectory)):
 #     trajectory[i] = (0, trajectory[i][1])
+
 for i in range(1, len(trajectory)):
     left, right = constraints.wheel_speeds(trajectory[i][0], trajectory[i][1])
     lastLeft, lastRight = constraints.wheel_speeds(trajectory[i - 1][0], trajectory[i - 1][1])
@@ -438,7 +439,8 @@ for i in range(1, len(trajectory)):
 
 accel.remove(min(accel, key=lambda x: x[0]))
 accel.remove(min(accel, key=lambda x: x[1]))
-
+accel.remove(max(accel, key=lambda x: x[0]))
+accel.remove(max(accel, key=lambda x: x[1]))
 # for i in range(len(accel)):
 #     print(accel[i][1] / angular_accel_arr[i])
 
@@ -454,3 +456,7 @@ with open("profile.txt", "w") as file:
     for i in range(len(trajectory)):
         left, right = constraints.wheel_speeds(trajectory[i][0], trajectory[i][1])
         file.write(f"0,0,{left},{right}\n")
+
+
+
+# cProfile.run("generate(constraints, path, 0.01, 0.05)", 'restats')
